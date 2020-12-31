@@ -4,7 +4,7 @@ require_once 'lib/TwoFactorAuthException.php';
 
 require_once 'lib/Providers/Qr/IQRCodeProvider.php';
 require_once 'lib/Providers/Qr/BaseHTTPQRCodeProvider.php';
-require_once 'lib/Providers/Qr/GoogleQRCodeProvider.php';
+require_once 'lib/Providers/Qr/ImageChartsQRCodeProvider.php';
 require_once 'lib/Providers/Qr/QRException.php';
 
 require_once 'lib/Providers/Rng/IRNGProvider.php';
@@ -18,7 +18,7 @@ require_once 'lib/Providers/Rng/RNGException.php';
 require_once 'lib/Providers/Time/ITimeProvider.php';
 require_once 'lib/Providers/Time/LocalMachineTimeProvider.php';
 require_once 'lib/Providers/Time/HttpTimeProvider.php';
-require_once 'lib/Providers/Time/ConvertUnixTimeDotComTimeProvider.php';
+require_once 'lib/Providers/Time/NTPTimeProvider.php';
 require_once 'lib/Providers/Time/TimeException.php';
 
 use RobThree\Auth\TwoFactorAuth;
@@ -27,7 +27,7 @@ use RobThree\Auth\Providers\Rng\IRNGProvider;
 use RobThree\Auth\Providers\Time\ITimeProvider;
 
 
-class TwoFactorAuthTest extends PHPUnit_Framework_TestCase
+class TwoFactorAuthTest extends PHPUnit\Framework\TestCase
 {
     /**
      * @expectedException \RobThree\Auth\TwoFactorAuthException
@@ -102,6 +102,7 @@ class TwoFactorAuthTest extends PHPUnit_Framework_TestCase
 
         $tfa = new TwoFactorAuth('Test', 6, 30, 'sha1', null, null, $tpr1);
         $tfa->ensureCorrectTime(array($tpr2));   // 128 - 123 = 5 => within default leniency
+        $this->assertTrue(true);
     }
 
     /**
@@ -119,16 +120,19 @@ class TwoFactorAuthTest extends PHPUnit_Framework_TestCase
     public function testEnsureDefaultTimeProviderReturnsCorrectTime() {
         $tfa = new TwoFactorAuth('Test', 6, 30, 'sha1');
         $tfa->ensureCorrectTime(array(new TestTimeProvider(time())), 1);    // Use a leniency of 1, should the time change between both time() calls
+        $this->assertTrue(true);
     }
 
     public function testEnsureAllTimeProvidersReturnCorrectTime() {
         $tfa = new TwoFactorAuth('Test', 6, 30, 'sha1');
         $tfa->ensureCorrectTime(array(
-            new RobThree\Auth\Providers\Time\ConvertUnixTimeDotComTimeProvider(),
+            new RobThree\Auth\Providers\Time\NTPTimeProvider(),                         // Uses pool.ntp.org by default
+            //new RobThree\Auth\Providers\Time\NTPTimeProvider('time.google.com'),      // Somehow time.google.com and time.windows.com make travis timeout??
             new RobThree\Auth\Providers\Time\HttpTimeProvider(),                        // Uses google.com by default
             new RobThree\Auth\Providers\Time\HttpTimeProvider('https://github.com'),
             new RobThree\Auth\Providers\Time\HttpTimeProvider('https://yahoo.com'),
         ));
+        $this->assertTrue(true);
     }
 
     public function testVerifyCodeWorksCorrectly() {
@@ -148,6 +152,31 @@ class TwoFactorAuthTest extends PHPUnit_Framework_TestCase
 
         $this->assertEquals(true , $tfa->verifyCode('VMR466AB62ZBOKHE', '543160', 2, 1426847205 + 65));	//Test discrepancy
         $this->assertEquals(true , $tfa->verifyCode('VMR466AB62ZBOKHE', '543160', 2, 1426847205 - 65));	//Test discrepancy
+    }
+
+    public function testVerifyCorrectTimeSliceIsReturned() {
+        $tfa = new TwoFactorAuth('Test', 6, 30);
+
+        // We test with discrepancy 3 (so total of 7 codes: c-3, c-2, c-1, c, c+1, c+2, c+3
+        // Ensure each corresponding timeslice is returned correctly
+        $this->assertEquals(true, $tfa->verifyCode('VMR466AB62ZBOKHE', '534113', 3, 1426847190, $timeslice1));
+        $this->assertEquals(47561570, $timeslice1);
+        $this->assertEquals(true, $tfa->verifyCode('VMR466AB62ZBOKHE', '819652', 3, 1426847190, $timeslice2));
+        $this->assertEquals(47561571, $timeslice2);
+        $this->assertEquals(true, $tfa->verifyCode('VMR466AB62ZBOKHE', '915954', 3, 1426847190, $timeslice3));
+        $this->assertEquals(47561572, $timeslice3);
+        $this->assertEquals(true, $tfa->verifyCode('VMR466AB62ZBOKHE', '543160', 3, 1426847190, $timeslice4));
+        $this->assertEquals(47561573, $timeslice4);
+        $this->assertEquals(true, $tfa->verifyCode('VMR466AB62ZBOKHE', '348401', 3, 1426847190, $timeslice5));
+        $this->assertEquals(47561574, $timeslice5);
+        $this->assertEquals(true, $tfa->verifyCode('VMR466AB62ZBOKHE', '648525', 3, 1426847190, $timeslice6));
+        $this->assertEquals(47561575, $timeslice6);
+        $this->assertEquals(true, $tfa->verifyCode('VMR466AB62ZBOKHE', '170645', 3, 1426847190, $timeslice7));
+        $this->assertEquals(47561576, $timeslice7);
+
+        // Incorrect code should return false and a 0 timeslice
+        $this->assertEquals(false, $tfa->verifyCode('VMR466AB62ZBOKHE', '111111', 3, 1426847190, $timeslice8));
+        $this->assertEquals(0, $timeslice8);
     }
 
     public function testTotpUriIsCorrect() {
@@ -295,10 +324,13 @@ class TwoFactorAuthTest extends PHPUnit_Framework_TestCase
      * @requires function mcrypt_create_iv
      */
     public function testMCryptRNGProvidersReturnExpectedNumberOfBytes() {
-        $rng = new \RobThree\Auth\Providers\Rng\MCryptRNGProvider();
-        foreach ($this->getRngTestLengths() as $l)
-            $this->assertEquals($l, strlen($rng->getRandomBytes($l)));
-        $this->assertEquals(true, $rng->isCryptographicallySecure());
+        if (function_exists('mcrypt_create_iv')) {
+            $rng = new \RobThree\Auth\Providers\Rng\MCryptRNGProvider();
+            foreach ($this->getRngTestLengths() as $l)
+                $this->assertEquals($l, strlen($rng->getRandomBytes($l)));
+            $this->assertEquals(true, $rng->isCryptographicallySecure());
+        }
+        $this->assertTrue(true);
     }
 
     /**
